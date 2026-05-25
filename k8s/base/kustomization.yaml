@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: repo-surgeon
+
+# Common labels applied to every resource
+commonLabels:
+  app.kubernetes.io/part-of: repo-surgeon
+  app.kubernetes.io/managed-by: kustomize
+
+resources:
+  - namespace.yaml
+  - postgres-statefulset.yaml
+  - postgres-service.yaml
+  - redis-deployment.yaml
+  - redis-service.yaml
+  - surgeon-deployment.yaml
+  - surgeon-service.yaml
+  - dashboard-deployment.yaml
+  - dashboard-service.yaml
+
+configMapGenerator:
+  - name: surgeon-config
+    files:
+      - configmap.yaml
+
+# Secrets are NOT generated here — populate via ExternalSecretsOperator or
+# `kubectl create secret generic surgeon-secrets ...` out of band.
+# secret.template.yaml shows the expected shape.
+
+images:
+  - name: repo-surgeon/surgeon-service
+    newTag: local
+  - name: repo-surgeon/dashboard
+    newTag: local
+  - name: postgres
+    newTag: 16-alpine
+  - name: redis
+    newTag: 7-alpine

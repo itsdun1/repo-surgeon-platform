@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: surgeon
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: surgeon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: surgeon
+    spec:
+      # In production, replace with a dedicated ServiceAccount that has access
+      # to mint sandbox pods via the Kubernetes API (see ARCHITECTURE.md).
+      serviceAccountName: default
+      containers:
+        - name: surgeon
+          image: repo-surgeon/surgeon-service:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 18000
+          env:
+            - name: DATABASE_URL
+              value: postgresql+asyncpg://surgeon:$(POSTGRES_PASSWORD)@postgres:5432/surgeon
+            - name: REDIS_URL
+              value: redis://redis:6379/0
+            - name: AGENT_REPO_PATH
+              value: /workspace/repo-surgeon
+            - name: WORKSPACE_ROOT
+              value: /tmp/surgeon-workspace
+            - name: LOG_ROOT
+              value: /workspace/logs
+            - name: GITHUB_APP_PRIVATE_KEY_PATH
+              value: /workspace/secrets/github-app-private-key.pem
+            - name: DEFAULT_MODEL
+              value: openai:gpt-5.1
+          envFrom:
+            - secretRef:
+                name: surgeon-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 2
+              memory: 2Gi
+          volumeMounts:
+            - name: agent-repo
+              mountPath: /workspace/repo-surgeon
+            - name: logs
+              mountPath: /workspace/logs
+            - name: app-secrets
+              mountPath: /workspace/secrets
+              readOnly: true
+            - name: workspace-tmp
+              mountPath: /tmp/surgeon-workspace
+      volumes:
+        - name: agent-repo
+          persistentVolumeClaim:
+            claimName: agent-repo-pvc
+        - name: logs
+          persistentVolumeClaim:
+            claimName: logs-pvc
+        - name: app-secrets
+          secret:
+            secretName: surgeon-app-secrets   # contains github-app-private-key.pem
+            defaultMode: 0400
+        - name: workspace-tmp
+          emptyDir:
+            sizeLimit: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-repo-pvc
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: logs-pvc
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi

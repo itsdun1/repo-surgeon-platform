@@ -1,0 +1,34 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Production overlay — real cloud cluster.
+# Adds:
+#   - HPA on surgeon (CPU-based, 2-20 pods)
+#   - KEDA ScaledObject (queue-depth-based scaling for the worker side)
+#   - cert-manager TLS ingress
+#   - NetworkPolicy default-deny + allowlist
+#   - Higher replica counts and resource limits
+
+namespace: repo-surgeon
+
+resources:
+  - ../../base
+  - patches/surgeon-hpa.yaml
+  - patches/surgeon-keda.yaml
+  - patches/ingress.yaml
+  - patches/networkpolicy.yaml
+
+patchesStrategicMerge:
+  - patches/surgeon-resources.yaml
+  - patches/dashboard-resources.yaml
+
+images:
+  # Replace with your real registry, tagged with semver / git SHA
+  - name: repo-surgeon/surgeon-service
+    newName: ghcr.io/itsdun1/surgeon-service
+    newTag: v1.0.0
+  - name: repo-surgeon/dashboard
+    newName: ghcr.io/itsdun1/dashboard
+    newTag: v1.0.0
+
+# Replicas are bumped via patches above; HPA takes over after that.

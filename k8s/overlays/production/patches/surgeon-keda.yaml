@@ -1,0 +1,24 @@
+# KEDA ScaledObject scales the surgeon Deployment based on Redis queue depth.
+# Requires KEDA installed in the cluster (https://keda.sh).
+#
+# In a more refined setup, the worker would be its own Deployment (separate
+# from the HTTP-serving surgeon) so the two scale independently. This is
+# noted as a follow-up in ARCHITECTURE.md.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: surgeon-worker
+  namespace: repo-surgeon
+spec:
+  scaleTargetRef:
+    name: surgeon
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  pollingInterval: 15
+  cooldownPeriod: 60
+  triggers:
+    - type: redis
+      metadata:
+        address: redis:6379
+        listName: queue:repo:default  # in reality: a pattern or per-repo scaler
+        listLength: "5"

@@ -1,0 +1,19 @@
+# Replace the PVC-backed StatefulSet volume with an emptyDir for local clusters.
+# Postgres data is lost when the pod is deleted — fine for dev.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  volumeClaimTemplates: []  # clear PVC template
+  template:
+    spec:
+      containers:
+        - name: postgres
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 2Gi

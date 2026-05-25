@@ -1,0 +1,26 @@
+# Expose dashboard + surgeon via NodePort for local clusters without an
+# ingress controller. Reach them via `kind get kubeconfig` or
+# `kubectl port-forward`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      nodePort: 30030
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: surgeon
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 18000
+      targetPort: http
+      nodePort: 30180

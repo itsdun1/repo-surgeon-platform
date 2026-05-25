@@ -1,0 +1,42 @@
+# Ingress with cert-manager TLS. Assumes:
+#   - nginx ingress controller installed
+#   - cert-manager installed with a ClusterIssuer named "letsencrypt-prod"
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: repo-surgeon
+  namespace: repo-surgeon
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"           # SSE
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"       # long-running runs
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/limit-rps: "10"                  # webhook rate-limit
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - surgeon.example.com
+        - api.surgeon.example.com
+      secretName: repo-surgeon-tls
+  rules:
+    - host: surgeon.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dashboard
+                port:
+                  name: http
+    - host: api.surgeon.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: surgeon
+                port:
+                  name: http

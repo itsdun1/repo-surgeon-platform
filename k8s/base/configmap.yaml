@@ -1,0 +1,5 @@
+# Non-secret env defaults. Mounted into surgeon as a ConfigMap via the
+# kustomization configMapGenerator. Real secrets go in surgeon-secrets.
+MAX_COST_USD_PER_RUN=2.0
+MAX_DURATION_S_PER_RUN=1800
+MAX_PRS_PER_REPO_PER_DAY=5

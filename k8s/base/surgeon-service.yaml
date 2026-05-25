@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: surgeon
+spec:
+  selector:
+    app.kubernetes.io/name: surgeon
+  ports:
+    - name: http
+      port: 18000
+      targetPort: http
