@@ -1,0 +1,4 @@
+[submodule "repo-surgeon"]
+	path = repo-surgeon
+	url = https://github.com/itsdun1/repo-surgeon.git
+	branch = main

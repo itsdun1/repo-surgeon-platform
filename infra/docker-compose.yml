@@ -1,0 +1,113 @@
+version: "3.9"
+
+# Full local stack. One command:
+#   docker compose --profile full up -d --build
+#
+# Components:
+#   - postgres       persistent state (runs, repos, webhook_events, ...)
+#   - redis          queue + locks + SSE pubsub
+#   - surgeon        FastAPI dispatcher + gitagent CLI + worker (port 18000)
+#   - dashboard      Next.js cockpit (port 3000)
+#   - smee           Webhook tunnel forwarder (https://smee.io/<channel> → surgeon)
+#
+# All containers share an internal network. Only host-exposed ports:
+#   :3000  → dashboard
+#   :18000 → surgeon
+#   :15432 → postgres (for debugging via psql)
+#   :16379 → redis (for debugging via redis-cli)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: surgeon-postgres
+    ports:
+      - "15432:5432"
+    environment:
+      POSTGRES_DB: surgeon
+      POSTGRES_USER: surgeon
+      POSTGRES_PASSWORD: dev
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U surgeon -d surgeon"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: surgeon-redis
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  surgeon:
+    build:
+      context: ..
+      dockerfile: surgeon-service/Dockerfile
+    image: repo-surgeon/surgeon-service:local
+    container_name: surgeon-service
+    profiles: [full]
+    ports:
+      - "18000:18000"
+    env_file:
+      - ../.env.local
+    environment:
+      # Override URLs to use docker network hostnames inside the container
+      DATABASE_URL: postgresql+asyncpg://surgeon:dev@postgres:5432/surgeon
+      REDIS_URL: redis://redis:6379/0
+      AGENT_REPO_PATH: /workspace/repo-surgeon
+      WORKSPACE_ROOT: /tmp/surgeon-workspace
+      LOG_ROOT: /workspace/logs
+      GITHUB_APP_PRIVATE_KEY_PATH: /workspace/secrets/github-app-private-key.pem
+    volumes:
+      # Bind-mount the agent repo so memory commits persist on host & push via git
+      - ../repo-surgeon:/workspace/repo-surgeon
+      # Bind-mount logs so the host (and dashboard rewrites) can read them too
+      - ../logs:/workspace/logs
+      # Bind-mount secrets (read-only)
+      - ../secrets:/workspace/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # Cleanup is scheduled in-process daily; ephemeral /tmp wipes per restart.
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
+    image: repo-surgeon/dashboard:local
+    container_name: surgeon-dashboard
+    profiles: [full]
+    ports:
+      - "3000:3000"
+    environment:
+      # Point the Next.js rewrites at the surgeon service via docker network
+      BACKEND_URL: http://surgeon:18000
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      - surgeon
+    restart: unless-stopped
+
+  smee:
+    image: node:20-bookworm-slim
+    container_name: surgeon-smee
+    profiles: [full]
+    env_file:
+      - ../.env.local
+    command: ["sh", "-c", "npm install -g --silent smee-client && exec smee --url \"$$SMEE_URL\" --target http://surgeon:18000/webhooks/github"]
+    depends_on:
+      - surgeon
+    restart: unless-stopped
+
+volumes:
+  pgdata:

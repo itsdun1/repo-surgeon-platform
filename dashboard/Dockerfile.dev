@@ -1,0 +1,10 @@
+# dashboard — DEV image with hot reload
+FROM node:20-bookworm-slim
+WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+COPY dashboard/package.json dashboard/pnpm-lock.yaml* ./
+RUN pnpm install --frozen-lockfile=false
+COPY dashboard/ ./
+ENV NEXT_TELEMETRY_DISABLED=1
+EXPOSE 3000
+CMD ["pnpm", "dev"]
