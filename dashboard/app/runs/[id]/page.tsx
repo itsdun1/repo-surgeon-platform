@@ -19,7 +19,19 @@ export default function RunDetailPage() {
     refetchInterval: 3_000,
   });
 
-  const { events, connected } = useRunStream(runId);
+  const { events, state } = useRunStream(runId);
+  const streamLabel: Record<typeof state, string> = {
+    connecting: "○ connecting",
+    live: "● live",
+    ended: "✓ complete",
+    error: "✗ error",
+  };
+  const streamColor: Record<typeof state, string> = {
+    connecting: "text-zinc-500",
+    live: "text-emerald-400",
+    ended: "text-zinc-400",
+    error: "text-red-400",
+  };
 
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -62,9 +74,7 @@ export default function RunDetailPage() {
           <div className="flex items-center gap-2 text-sm">
             <Terminal size={14} />
             <span>agent stream</span>
-            <span className={cn("text-xs", connected ? "text-emerald-400" : "text-zinc-500")}>
-              {connected ? "● live" : "○ disconnected"}
-            </span>
+            <span className={cn("text-xs", streamColor[state])}>{streamLabel[state]}</span>
           </div>
           <div className="text-xs text-muted font-mono">{events.length} lines</div>
         </div>
@@ -75,11 +85,36 @@ export default function RunDetailPage() {
           {events.length === 0 ? (
             <div className="text-zinc-600">waiting for agent output…</div>
           ) : (
-            events.map((e, i) => (
-              <div key={i} className={cn(e.kind === "historical" ? "text-zinc-500" : "text-zinc-200")}>
-                {e.line}
-              </div>
-            ))
+            events.map((e, i) => {
+              if (e.kind === "stream_end") {
+                return (
+                  <div key={i} className="text-zinc-500 italic py-2">
+                    — stream ended ({e.reason || "complete"}
+                    {e.exit_code != null ? `, exit=${e.exit_code}` : ""})
+                    {e.pr_url && (
+                      <>
+                        {" — "}
+                        <a href={e.pr_url} target="_blank" rel="noopener" className="text-emerald-400 underline">
+                          {e.pr_url}
+                        </a>
+                      </>
+                    )}
+                  </div>
+                );
+              }
+              if (e.kind === "error") {
+                return (
+                  <div key={i} className="text-red-400 py-1">
+                    error: {e.message}
+                  </div>
+                );
+              }
+              return (
+                <div key={i} className={cn(e.kind === "historical" ? "text-zinc-500" : "text-zinc-200")}>
+                  {e.line}
+                </div>
+              );
+            })
           )}
         </div>
       </div>

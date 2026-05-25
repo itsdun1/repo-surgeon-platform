@@ -9,10 +9,11 @@ RUN corepack enable && corepack prepare pnpm@9.15.0 --activate \
     && pnpm install --frozen-lockfile=false
 
 FROM node:20-bookworm-slim AS builder
+ARG NEXT_PUBLIC_BACKEND_BROWSER_URL=http://localhost:18000
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY dashboard/ ./
-ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_TELEMETRY_DISABLED=1 NEXT_PUBLIC_BACKEND_BROWSER_URL=${NEXT_PUBLIC_BACKEND_BROWSER_URL}
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate && pnpm build
 
 FROM node:20-bookworm-slim AS runner
