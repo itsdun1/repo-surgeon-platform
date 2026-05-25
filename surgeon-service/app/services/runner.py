@@ -103,28 +103,45 @@ async def run_agent(job: dict[str, Any], run_id: str, db_callback, model: str | 
 
     log_path = Path(settings.log_root).expanduser().resolve() / f"{run_id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = log_path.open("w")
+
+    async def progress(msg: str) -> None:
+        """Publish a prep-phase event to SSE and persist to log file."""
+        line = msg if msg.endswith("\n") else msg + "\n"
+        log_file.write(line)
+        log_file.flush()
+        await queue.publish_log(run_id, msg)
 
     try:
         await db_callback(status="running", started_at=datetime.now(timezone.utc), log_path=str(log_path))
 
-        # 2. Ensure agent repo is at latest
-        agent_dir = await workspace.ensure_agent_repo_latest()
+        await progress(f"[prep] received job mode={job.get('mode')} repo={repo} issue={job.get('issue_number')}")
 
-        # 3. Clone target into per-run workspace
+        # 2. Ensure agent repo is at latest
+        await progress("[prep] ▶ pulling latest agent repo (./repo-surgeon)...")
+        agent_dir = await workspace.ensure_agent_repo_latest()
+        await progress(f"[prep] ✓ agent repo at {agent_dir}")
+
+        # 3. Clone target + install deps
+        await progress(f"[prep] ▶ cloning target repo {repo} (shallow, depth=50)...")
         try:
-            target_dir = await workspace.clone_target(repo, run_id, token)
+            target_dir = await workspace.clone_target(repo, run_id, token, progress=progress)
         except Exception as e:
+            await progress(f"[prep] ✗ clone failed: {e}")
             await db_callback(
                 status="failed",
                 finished_at=datetime.now(timezone.utc),
                 error=f"clone failed: {e}",
             )
+            log_file.close()
             return {"status": "failed", "reason": "clone failed", "error": str(e)}
+        await progress(f"[prep] ✓ workspace ready at {target_dir}")
 
         # 4. Build prompt
         prompt = build_prompt(job)
 
         # 5. Spawn gitagent CLI
+        chosen_model = model or settings.default_model
         cmd = [
             shutil.which("gitagent") or "gitagent",
             "--dir",
@@ -132,7 +149,7 @@ async def run_agent(job: dict[str, Any], run_id: str, db_callback, model: str | 
             "--prompt",
             prompt,
             "--model",
-            model or settings.default_model,
+            chosen_model,
         ]
         env = {
             **os.environ,
@@ -144,6 +161,7 @@ async def run_agent(job: dict[str, Any], run_id: str, db_callback, model: str | 
             "OPENAI_API_KEY": settings.openai_api_key,
         }
 
+        await progress(f"[prep] ▶ spawning gitagent (model={chosen_model})...")
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -152,24 +170,26 @@ async def run_agent(job: dict[str, Any], run_id: str, db_callback, model: str | 
                 stderr=asyncio.subprocess.STDOUT,
             )
         except FileNotFoundError:
+            await progress("[prep] ✗ gitagent CLI not installed")
             await db_callback(
                 status="failed",
                 finished_at=datetime.now(timezone.utc),
                 error="gitagent CLI not installed",
             )
+            log_file.close()
             await workspace.cleanup_workspace(run_id)
             return {"status": "failed", "reason": "gitagent CLI not installed"}
+        await progress(f"[prep] ✓ agent spawned (pid={proc.pid})\n")
 
         # 6. Stream stdout to log file + Redis pubsub
         log_buf: list[str] = []
-        with log_path.open("w") as logf:
-            assert proc.stdout is not None
-            async for raw_line in proc.stdout:
-                line = raw_line.decode(errors="ignore")
-                logf.write(line)
-                logf.flush()
-                log_buf.append(line)
-                await queue.publish_log(run_id, line.rstrip("\n"))
+        assert proc.stdout is not None
+        async for raw_line in proc.stdout:
+            line = raw_line.decode(errors="ignore")
+            log_file.write(line)
+            log_file.flush()
+            log_buf.append(line)
+            await queue.publish_log(run_id, line.rstrip("\n"))
 
         rc = await asyncio.wait_for(proc.wait(), timeout=60)
         full_log = "".join(log_buf)
@@ -210,5 +230,9 @@ async def run_agent(job: dict[str, Any], run_id: str, db_callback, model: str | 
         }
 
     finally:
+        try:
+            log_file.close()
+        except Exception:
+            pass
         await workspace.cleanup_workspace(run_id)
         await queue.release_repo_lock(repo_lock_key)

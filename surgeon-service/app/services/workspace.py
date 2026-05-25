@@ -1,8 +1,9 @@
-"""Target-repo workspace management. Shallow-clones, cleans up."""
+"""Target-repo workspace management. Shallow-clones, installs deps, cleans up."""
 from __future__ import annotations
 
 import asyncio
 import shutil
+import time
 from pathlib import Path
 
 from app.config import settings
@@ -23,8 +24,22 @@ async def _run(cmd: list[str], cwd: Path | None = None, timeout: int = 60) -> tu
     return proc.returncode or 0, (stdout or b"").decode(errors="ignore")
 
 
-async def clone_target(repo_full_name: str, run_id: str, token: str) -> Path:
-    """Shallow-clone the target repo into a per-run workspace, return the path."""
+async def clone_target(
+    repo_full_name: str,
+    run_id: str,
+    token: str,
+    progress=None,
+) -> Path:
+    """Shallow-clone the target repo, install deps, create branch. Return path.
+
+    `progress` is an optional async callable taking a string — used to publish
+    prep-phase events to SSE so the dashboard doesn't go silent for 30+ sec
+    during npm install.
+    """
+    async def _p(msg: str) -> None:
+        if progress:
+            await progress(msg)
+
     workspace_root = Path(settings.workspace_root) / run_id
     workspace_root.mkdir(parents=True, exist_ok=True)
     target_dir = workspace_root / "target"
@@ -32,50 +47,67 @@ async def clone_target(repo_full_name: str, run_id: str, token: str) -> Path:
         shutil.rmtree(target_dir, ignore_errors=True)
 
     clone_url = f"https://x-access-token:{token}@github.com/{repo_full_name}.git"
+    t0 = time.monotonic()
     rc, out = await _run(["git", "clone", "--depth=50", clone_url, str(target_dir)], timeout=120)
     if rc != 0:
         raise RuntimeError(f"git clone failed: {out[:300]}")
+    await _p(f"[prep] ✓ cloned in {time.monotonic() - t0:.1f}s")
 
-    # Configure git identity for commits the agent makes
     await _run(["git", "config", "user.email", "repo-surgeon[bot]@users.noreply.github.com"], cwd=target_dir)
     await _run(["git", "config", "user.name", "repo-surgeon[bot]"], cwd=target_dir)
 
-    # Create the session branch
     await _run(["git", "checkout", "-b", f"surgeon/{run_id}"], cwd=target_dir)
+    await _p(f"[prep] ✓ branch surgeon/{run_id} ready")
 
-    # Pre-install dependencies so the agent's `npm test` / `pytest` can run.
-    # Best-effort: ignore failures here so the agent can still attempt to run
-    # tests later (it'll surface a clearer error if deps are still missing).
-    await _install_deps(target_dir)
+    await _install_deps(target_dir, progress=progress)
 
     return target_dir
 
 
-async def _install_deps(target_dir: Path) -> None:
+async def _install_deps(target_dir: Path, progress=None) -> None:
     """Detect language and install dependencies. Best-effort, non-fatal."""
+    async def _p(msg: str) -> None:
+        if progress:
+            await progress(msg)
+
     if (target_dir / "package.json").exists():
-        await _run(
+        await _p("[prep] ▶ npm install (Node/JS deps — first run is ~30-60s)...")
+        t0 = time.monotonic()
+        rc, _ = await _run(
             ["npm", "install", "--no-audit", "--no-fund", "--prefer-offline"],
             cwd=target_dir,
             timeout=300,
         )
+        elapsed = time.monotonic() - t0
+        await _p(f"[prep] {'✓' if rc == 0 else '⚠'} npm install ({elapsed:.1f}s)")
+
     if (target_dir / "requirements.txt").exists():
-        await _run(
+        await _p("[prep] ▶ pip install -r requirements.txt ...")
+        t0 = time.monotonic()
+        rc, _ = await _run(
             ["pip", "install", "--quiet", "--no-cache-dir", "-r", "requirements.txt"],
             cwd=target_dir,
             timeout=300,
         )
+        await _p(f"[prep] {'✓' if rc == 0 else '⚠'} pip install ({time.monotonic() - t0:.1f}s)")
     elif (target_dir / "pyproject.toml").exists():
-        await _run(
+        await _p("[prep] ▶ pip install -e . ...")
+        t0 = time.monotonic()
+        rc, _ = await _run(
             ["pip", "install", "--quiet", "--no-cache-dir", "-e", "."],
             cwd=target_dir,
             timeout=300,
         )
+        await _p(f"[prep] {'✓' if rc == 0 else '⚠'} pip install -e ({time.monotonic() - t0:.1f}s)")
+
     if (target_dir / "Gemfile").exists():
+        await _p("[prep] ▶ bundle install ...")
         await _run(["bundle", "install", "--quiet"], cwd=target_dir, timeout=300)
     if (target_dir / "go.mod").exists():
+        await _p("[prep] ▶ go mod download ...")
         await _run(["go", "mod", "download"], cwd=target_dir, timeout=300)
     if (target_dir / "Cargo.toml").exists():
+        await _p("[prep] ▶ cargo fetch ...")
         await _run(["cargo", "fetch", "--quiet"], cwd=target_dir, timeout=300)
 
 
@@ -97,6 +129,5 @@ async def ensure_agent_repo_latest() -> Path:
         if rc != 0:
             raise RuntimeError(f"agent repo clone failed: {out[:300]}")
     else:
-        # Try to pull; ignore failures (e.g., no remote configured locally)
         await _run(["git", "pull", "--rebase", "--autostash"], cwd=agent_dir, timeout=30)
     return agent_dir
