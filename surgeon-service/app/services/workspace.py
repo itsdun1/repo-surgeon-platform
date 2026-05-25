@@ -43,7 +43,40 @@ async def clone_target(repo_full_name: str, run_id: str, token: str) -> Path:
     # Create the session branch
     await _run(["git", "checkout", "-b", f"surgeon/{run_id}"], cwd=target_dir)
 
+    # Pre-install dependencies so the agent's `npm test` / `pytest` can run.
+    # Best-effort: ignore failures here so the agent can still attempt to run
+    # tests later (it'll surface a clearer error if deps are still missing).
+    await _install_deps(target_dir)
+
     return target_dir
+
+
+async def _install_deps(target_dir: Path) -> None:
+    """Detect language and install dependencies. Best-effort, non-fatal."""
+    if (target_dir / "package.json").exists():
+        await _run(
+            ["npm", "install", "--no-audit", "--no-fund", "--prefer-offline"],
+            cwd=target_dir,
+            timeout=300,
+        )
+    if (target_dir / "requirements.txt").exists():
+        await _run(
+            ["pip", "install", "--quiet", "--no-cache-dir", "-r", "requirements.txt"],
+            cwd=target_dir,
+            timeout=300,
+        )
+    elif (target_dir / "pyproject.toml").exists():
+        await _run(
+            ["pip", "install", "--quiet", "--no-cache-dir", "-e", "."],
+            cwd=target_dir,
+            timeout=300,
+        )
+    if (target_dir / "Gemfile").exists():
+        await _run(["bundle", "install", "--quiet"], cwd=target_dir, timeout=300)
+    if (target_dir / "go.mod").exists():
+        await _run(["go", "mod", "download"], cwd=target_dir, timeout=300)
+    if (target_dir / "Cargo.toml").exists():
+        await _run(["cargo", "fetch", "--quiet"], cwd=target_dir, timeout=300)
 
 
 async def cleanup_workspace(run_id: str) -> None:
